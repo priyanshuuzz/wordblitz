@@ -54,6 +54,34 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ── Private Rooms ─────────────────────────────────────────────────────────
+    // Any authenticated user can create a room (they become host).
+    // Any authenticated user can read a room (to join by code).
+    // Only room members can update (join / leave / start).
+    match /privateRooms/{roomId} {
+      allow read:   if isAuth();
+
+      // Create: must be authenticated, must set themselves as host
+      allow create: if isAuth()
+        && request.resource.data.hostUid == request.auth.uid
+        && request.resource.data.status == "waiting";
+
+      // Update: must be authenticated and either the host or joining as a new player
+      allow update: if isAuth()
+        && (
+          // Host can update anything (start game, change settings)
+          resource.data.hostUid == request.auth.uid
+          ||
+          // Any auth user can add themselves to players list (join)
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(["players"])
+            && resource.data.status == "waiting"
+          )
+        );
+
+      allow delete: if isAuth() && resource.data.hostUid == request.auth.uid;
+    }
+
     // ── Daily rewards ─────────────────────────────────────────────────────────
     // Players can read their own reward state.
     // Writes via callable Cloud Function only.

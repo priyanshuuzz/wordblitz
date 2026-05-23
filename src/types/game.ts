@@ -1,7 +1,7 @@
 // ── Shared game types used by both server and client ──────────────────────
 
 export type PlayerStatus = "active" | "eliminated" | "forfeited" | "disconnected";
-export type RoomStatus   = "countdown" | "active" | "finished";
+export type RoomStatus   = "waiting" | "countdown" | "active" | "finished";
 export type GameMode     = "ranked" | "casual" | "private" | "category";
 
 export interface RoomPlayer {
@@ -34,6 +34,8 @@ export interface RoomState {
   winnerId: string | null;           // socket.id of winner
   winnerUid: string | null;          // Firebase UID of winner
   eventLog: GameEvent[];
+  maxPlayers?: number;               // private rooms only
+  hostSocketId?: string;             // private rooms only
 }
 
 export interface GameEvent {

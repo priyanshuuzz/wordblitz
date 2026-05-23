@@ -734,6 +734,10 @@ const HomeContent = () => {
   const { setGameState, username, avatar, uid, mmr } = useGameStore();
   const [profile, setProfile] = useState<any>(null);
   const [history, setHistory] = useState<any[]>([]);
+  const [joinCode, setJoinCode] = useState("");
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [joining, setJoining] = useState(false);
+  const [showJoin, setShowJoin] = useState(false);
 
   useEffect(() => {
     if (!uid) return;
@@ -757,6 +761,43 @@ const HomeContent = () => {
     }).catch(() => {
       setGameState({ status: "matchmaking" });
     });
+  };
+
+  const joinRoom = async () => {
+    const code = joinCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (code.length < 6) { setJoinError("Enter a valid room code"); return; }
+    setJoinError(null);
+    setJoining(true);
+    try {
+      const { joinPrivateRoom } = await import("./lib/privateRoom");
+      const result = await joinPrivateRoom(code, { uid, username, avatar });
+
+      if (!result.ok) {
+        const msgs: Record<string, string> = {
+          not_found:      "Room not found — check the code",
+          already_started:"Game already started",
+          full:           "Room is full",
+          already_in_room:"You're already in this room",
+        };
+        setJoinError(msgs[(result as { ok: false; reason: string }).reason] ?? "Could not join room");
+        setJoining(false);
+        return;
+      }
+
+      setJoining(false);
+      setGameState({
+        status: "private_room",
+        roomId: code,
+        players: result.room.players.map(p => ({
+          id: p.uid, uid: p.uid, username: p.username,
+          avatar: p.avatar, status: "active" as const, lives: 3,
+        })),
+      });
+    } catch (e) {
+      setJoining(false);
+      setJoinError("Connection failed — try again");
+      console.error("[JoinRoom]", e);
+    }
   };
 
   const winRate = profile && profile.gamesPlayed > 0
@@ -793,6 +834,64 @@ const HomeContent = () => {
                 {b.label}
               </motion.button>
             ))}
+          </div>
+
+          {/* ── Join Room by Code ─────────────────────────────────────── */}
+          <div className="border border-[#1e1e1e] bg-[#0f0f0f]">
+            <button
+              onClick={() => { sfx.click(); setShowJoin(v => !v); setJoinError(null); setJoinCode(""); }}
+              className="w-full h-11 flex items-center justify-between px-4 text-[11px] font-headline font-bold uppercase tracking-widest text-[#8a8a8a] hover:text-white transition-colors"
+            >
+              <span className="flex items-center gap-2"><Key size={14} className="text-[#cafd00]" />Join a Room</span>
+              <motion.span animate={{ rotate: showJoin ? 180 : 0 }} transition={{ duration: 0.2 }}>
+                <ChevronLeft size={14} className="-rotate-90" />
+              </motion.span>
+            </button>
+            <AnimatePresence>
+              {showJoin && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }}
+                  className="overflow-hidden"
+                >
+                  <div className="px-4 pb-4 flex flex-col gap-3 border-t border-[#1e1e1e] pt-3">
+                    <div className="flex gap-2">
+                      <input
+                        value={joinCode}
+                        onChange={e => { setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "")); setJoinError(null); }}
+                        onKeyDown={e => e.key === "Enter" && joinRoom()}
+                        placeholder="ROOM CODE"
+                        maxLength={8}
+                        aria-label="Room code"
+                        className="input-game flex-grow h-12 px-4 font-mono text-[18px] font-bold text-[#f3ffca] tracking-[0.25em] placeholder-[#3a3a3a] uppercase"
+                      />
+                      <motion.button
+                        whileTap={buttonTap}
+                        onClick={joinRoom}
+                        disabled={joining || joinCode.length < 6}
+                        className="h-12 px-5 bg-[#cafd00] text-[#516700] font-headline font-black text-[12px] uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#d8ff33] transition-colors flex items-center gap-2"
+                      >
+                        {joining ? (
+                          <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
+                            <RefreshCcw size={16} />
+                          </motion.span>
+                        ) : (
+                          <ArrowUp size={16} className="rotate-90" />
+                        )}
+                        {joining ? "Joining…" : "Join"}
+                      </motion.button>
+                    </div>
+                    {joinError && (
+                      <motion.p initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}
+                        className="text-[#ff5c3a] text-[11px] font-bold uppercase tracking-widest flex items-center gap-1.5">
+                        <XCircle size={12} />{joinError}
+                      </motion.p>
+                    )}
+                    <p className="text-[#3a3a3a] text-[10px] uppercase tracking-widest">Ask the host for their room code</p>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         </div>
       </section>
@@ -1132,131 +1231,215 @@ const Matchmaking = () => {
 
 // ── Private Room Setup ─────────────────────────────────────────────────────
 const PrivateRoomSetup = () => {
-  const { setGameState, username, avatar, turnDuration } = useGameStore();
+  const { setGameState, username, avatar, uid, mmr, turnDuration } = useGameStore();
   const [roomSize, setRoomSize] = useState(4);
-  const [roomCode] = useState(() => {
-    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    let c = ""; for (let i = 0; i < 6; i++) c += chars[Math.floor(Math.random() * chars.length)];
-    return `${c.slice(0,3)}-${c.slice(3)}`;
-  });
-  const [players, setPlayers] = useState<any[]>([{ id: "host", username: "You (Host)", avatar, isHost: true, color: "#cafd00" }]);
+  const [roomCode, setRoomCode] = useState<string | null>(null);
+  const [players, setPlayers] = useState<{ uid: string; username: string; avatar: string; isHost?: boolean }[]>([]);
   const [copied, setCopied] = useState(false);
-  const fakeNames  = ["Viper_99","SwiftKey","LexKing","ByteMe","FastFingers"];
-  const fakeColors = ["#ff51fa","#ffd166","#cafd00","#ff5c3a","#8a8a8a"];
+  const [creating, setCreating] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const isHost = players[0]?.uid === uid;
+  const fakeColors = ["#cafd00", "#ff51fa", "#ffd166", "#ff5c3a", "#8a8a8a", "#b9f2ff"];
 
-  const simulateJoin = () => {
-    if (players.length < roomSize) {
-      const i = players.length - 1;
-      sfx.notification();
-      setPlayers(p => [...p, { id: `fake-${i}`, username: fakeNames[i], avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${fakeNames[i]}`, color: fakeColors[i % fakeColors.length] }]);
+  // Create room on mount
+  useEffect(() => {
+    let unsubscribe: (() => void) | null = null;
+    let cancelled = false;
+
+    // Check if we're a guest (already have a roomId from joining)
+    const existingRoomId = useGameStore.getState().roomId;
+
+    const subscribeAndListen = (code: string, isCreating: boolean) => {
+      import("./lib/privateRoom").then(({ subscribeToRoom }) => {
+        if (cancelled) return;
+        if (!isCreating) { setRoomCode(code); setCreating(false); }
+
+        unsubscribe = subscribeToRoom(code, (room) => {
+          if (!room || cancelled) return;
+          setPlayers(room.players.map((p, i) => ({ ...p, isHost: i === 0 })));
+          if (room.status === "started") {
+            setGameState({
+              status: "playing",
+              roomId: code,
+              players: room.players.map((p) => ({
+                id: p.uid, uid: p.uid,
+                username: p.username, avatar: p.avatar,
+                status: "active" as const, lives: 3,
+              })),
+              currentTurnId: room.players[0]?.uid ?? null,
+              lastWord: "", usedWords: [],
+              turnDeadline: Date.now() + room.turnDuration,
+              turnDuration: room.turnDuration,
+            });
+          }
+        });
+      });
+    };
+
+    if (existingRoomId) {
+      // Guest path — already joined, just subscribe
+      subscribeAndListen(existingRoomId, false);
+    } else {
+      // Host path — create room then subscribe
+      import("./lib/privateRoom").then(({ createPrivateRoom }) => {
+        if (cancelled) return;
+        createPrivateRoom(
+          { uid, username, avatar },
+          roomSize,
+          turnDuration
+        ).then(code => {
+          if (cancelled) return;
+          setRoomCode(code);
+          setCreating(false);
+          setGameState({ roomId: code });
+          subscribeAndListen(code, true);
+        }).catch(err => {
+          if (!cancelled) { setCreating(false); setError("Failed to create room. Check your connection."); }
+          console.error("[PrivateRoom] create error:", err);
+        });
+      });
     }
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const copyCode = () => {
+    if (!roomCode) return;
+    sfx.click();
+    navigator.clipboard.writeText(roomCode);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
-  const copyCode = () => { sfx.click(); navigator.clipboard.writeText(roomCode); setCopied(true); setTimeout(() => setCopied(false), 2000); };
-
-  const startGame = () => {
-    if (players.length < 2) return;
+  const startGame = async () => {
+    if (!roomCode || players.length < 2) return;
     sfx.matchFound();
-    setGameState({
-      status: "playing",
-      players: players.map(p => ({
-        id:       p.id === "host" ? "me" : p.id,
-        uid:      p.id === "host" ? useGameStore.getState().uid : p.id,
-        username: p.username === "You (Host)" ? username : p.username,
-        avatar:   p.avatar,
-        status:   "active" as const,
-        lives:    3,
-      })),
-      currentTurnId: "me",
-      lastWord:      "RIVER",
-      usedWords:     ["RIVER"],
-      turnDeadline:  Date.now() + turnDuration,
-    });
+    const { startPrivateRoom } = await import("./lib/privateRoom");
+    await startPrivateRoom(roomCode);
+    // onSnapshot above will handle the transition for all players
   };
+
+  const displayCode = roomCode
+    ? `${roomCode.slice(0, 3)}-${roomCode.slice(3)}`
+    : "------";
 
   return (
     <motion.div variants={pageVariants} initial="initial" animate="animate" exit="exit"
       className="min-h-[100dvh] flex flex-col bg-[#0a0a0a] overflow-y-auto no-scrollbar">
       <header className="h-16 flex items-center px-5 gap-4 border-b border-[#1a1a1a] sticky top-0 bg-[#0a0a0a] z-10">
-        <motion.button whileTap={buttonTap} onClick={() => { sfx.click(); setGameState({ status: "lobby" }); }}
+        <motion.button whileTap={buttonTap} onClick={() => { sfx.click(); setGameState({ status: "lobby", roomId: null }); }}
           className="w-9 h-9 flex items-center justify-center text-[#cafd00] hover:bg-[#141414] transition-colors">
           <ArrowLeft size={20} />
         </motion.button>
         <h1 className="font-headline font-black text-lg uppercase tracking-tighter text-[#f3ffca]">Private Room</h1>
+        {!isHost && <span className="ml-auto text-[10px] font-headline font-bold text-[#ff51fa] uppercase tracking-widest">Guest</span>}
       </header>
       <div className="flex-grow flex flex-col p-5 gap-5">
-        <div className="space-y-3">
-          <label className="block font-headline font-bold text-[10px] text-[#8a8a8a] uppercase tracking-widest">Players</label>
-          <div className="flex gap-2">
-            {[2,3,4,5,6].map(s => (
-              <button key={s} onClick={() => { sfx.click(); setRoomSize(s); }}
-                className={`w-12 h-12 font-headline font-black text-xl transition-all border ${roomSize === s ? "bg-[#cafd00] text-[#516700] border-[#cafd00]" : "bg-[#141414] text-[#8a8a8a] border-[#2a2a2a] hover:border-[#3a3a3a]"}`}>
-                {s}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="space-y-3">
-          <label className="block font-headline font-bold text-[10px] text-[#8a8a8a] uppercase tracking-widest">Turn Timer</label>
-          <div className="flex flex-wrap gap-2">
-            {[{l:"10s",v:10_000},{l:"15s",v:15_000},{l:"30s",v:30_000},{l:"1m",v:60_000},{l:"2m",v:120_000},{l:"5m",v:300_000}].map(t => (
-              <button key={t.l} onClick={() => { sfx.click(); setGameState({ turnDuration: t.v }); }}
-                className={`flex-1 min-w-[48px] h-11 font-headline font-bold text-[12px] uppercase transition-all ${turnDuration === t.v ? "bg-[#cafd00] text-[#516700]" : "bg-[#141414] text-[#8a8a8a] border border-[#2a2a2a] hover:border-[#3a3a3a]"}`}>
-                {t.l}
-              </button>
-            ))}
-          </div>
-        </div>
+
+        {/* Room Code */}
         <div className="space-y-2">
           <label className="block font-headline font-bold text-[10px] text-[#8a8a8a] uppercase tracking-widest">Room Code</label>
           <div className="flex gap-2">
-            <div className="flex-grow bg-[#141414] border border-[#2a2a2a] h-16 flex items-center justify-center font-mono text-3xl font-bold text-[#f3ffca] tracking-[0.3em]">
-              {roomCode}
+            <div className="flex-grow bg-[#141414] border border-[#2a2a2a] h-16 flex items-center justify-center font-mono text-3xl font-bold tracking-[0.3em] relative overflow-hidden">
+              {creating ? (
+                <motion.span animate={{ opacity: [0.3, 1, 0.3] }} transition={{ duration: 1.2, repeat: Infinity }}
+                  className="text-[#5a5a5a] text-[14px] uppercase tracking-widest">Generating…</motion.span>
+              ) : error ? (
+                <span className="text-[#ff5c3a] text-[12px] px-4 text-center">{error}</span>
+              ) : (
+                <span className="text-[#f3ffca]">{displayCode}</span>
+              )}
             </div>
-            <button onClick={copyCode} className="w-16 h-16 bg-[#1e1e1e] border border-[#2a2a2a] flex items-center justify-center text-[#cafd00] hover:bg-[#282828] transition-colors active:scale-95">
+            <button onClick={copyCode} disabled={!roomCode}
+              className="w-16 h-16 bg-[#1e1e1e] border border-[#2a2a2a] flex items-center justify-center text-[#cafd00] hover:bg-[#282828] transition-colors active:scale-95 disabled:opacity-40">
               {copied ? <Check size={20} /> : <Copy size={20} />}
             </button>
           </div>
+          <p className="text-[#3a3a3a] text-[10px] uppercase tracking-widest">Share this code with friends to invite them</p>
         </div>
+
+        {/* Host-only settings (locked after room created) */}
+        {isHost && (
+          <>
+            <div className="space-y-3">
+              <label className="block font-headline font-bold text-[10px] text-[#8a8a8a] uppercase tracking-widest">Max Players</label>
+              <div className="flex gap-2">
+                {[2,3,4,5,6].map(s => (
+                  <button key={s} onClick={() => { sfx.click(); setRoomSize(s); }}
+                    disabled={!!roomCode}
+                    className={`w-12 h-12 font-headline font-black text-xl transition-all border disabled:opacity-40 disabled:cursor-not-allowed ${roomSize === s ? "bg-[#cafd00] text-[#516700] border-[#cafd00]" : "bg-[#141414] text-[#8a8a8a] border-[#2a2a2a] hover:border-[#3a3a3a]"}`}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-3">
+              <label className="block font-headline font-bold text-[10px] text-[#8a8a8a] uppercase tracking-widest">Turn Timer</label>
+              <div className="flex flex-wrap gap-2">
+                {[{l:"10s",v:10_000},{l:"15s",v:15_000},{l:"30s",v:30_000},{l:"1m",v:60_000},{l:"2m",v:120_000},{l:"5m",v:300_000}].map(t => (
+                  <button key={t.l} onClick={() => { sfx.click(); setGameState({ turnDuration: t.v }); }}
+                    disabled={!!roomCode}
+                    className={`flex-1 min-w-[48px] h-11 font-headline font-bold text-[12px] uppercase transition-all disabled:opacity-40 disabled:cursor-not-allowed ${turnDuration === t.v ? "bg-[#cafd00] text-[#516700]" : "bg-[#141414] text-[#8a8a8a] border border-[#2a2a2a] hover:border-[#3a3a3a]"}`}>
+                    {t.l}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Action buttons */}
         <div className="flex flex-col gap-2.5">
           <Button variant="secondary" fullWidth className="h-11 border-[#ff51fa] text-[#ff51fa] hover:bg-[rgba(255,81,250,0.08)]"
-            onClick={() => { sfx.click(); navigator.clipboard.writeText(roomCode); }}>
-            Share Invite
+            onClick={copyCode} disabled={!roomCode}>
+            <Copy size={14} className="mr-2" />Share Invite
           </Button>
-          <Button variant="primary" fullWidth size="xl" onClick={startGame} disabled={players.length < 2}>
-            Start Game
-          </Button>
-        </div>
-        <div className="space-y-3">
-          <div className="flex justify-between items-center">
-            <label className="font-headline font-bold text-[10px] text-[#8a8a8a] uppercase tracking-widest">
-              Players <span className="text-[#cafd00]">{players.length}/{roomSize}</span>
-            </label>
-          </div>
-          <div className="space-y-2">
-            {players.map(p => (
-              <div key={p.id} className={`bg-[#141414] p-3 flex items-center justify-between border-l-4 ${p.isHost ? "border-[#cafd00]" : "border-[#ff51fa]"}`}>
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 flex items-center justify-center font-headline font-black text-lg" style={{ backgroundColor: p.color, color: "#0a0a0a" }}>
-                    {p.username.charAt(0).toUpperCase()}
-                  </div>
-                  <span className="font-bold text-[13px] text-white">{p.username}</span>
-                </div>
-                <StatusBadge label={p.isHost ? "Host" : "Ready"} color={p.isHost ? "primary" : "success"} />
-              </div>
-            ))}
-            {Array.from({ length: roomSize - players.length }).map((_, i) => (
-              <div key={i} className="bg-[#0f0f0f] border border-dashed border-[#2a2a2a] p-3 flex items-center justify-center h-14">
-                <span className="text-[#3a3a3a] text-[12px] italic">Waiting for player...</span>
-              </div>
-            ))}
-          </div>
-          {players.length < roomSize && (
-            <button onClick={simulateJoin}
-              className="w-full p-2.5 border border-dashed border-[#2a2a2a] text-[#3a3a3a] font-headline font-bold text-[11px] uppercase tracking-widest hover:text-[#8a8a8a] hover:border-[#3a3a3a] transition-all">
-              + Simulate Player Join
-            </button>
+          {isHost && (
+            <Button variant="primary" fullWidth size="xl" onClick={startGame} disabled={players.length < 2 || !roomCode}>
+              Start Game ({players.length}/{roomSize})
+            </Button>
           )}
+          {!isHost && (
+            <div className="bg-[#141414] border border-[#1e1e1e] p-4 text-center">
+              <motion.span animate={{ opacity: [0.5, 1, 0.5] }} transition={{ duration: 1.5, repeat: Infinity }}
+                className="text-[11px] font-headline font-bold text-[#cafd00] uppercase tracking-widest">
+                Waiting for host to start…
+              </motion.span>
+            </div>
+          )}
+        </div>
+
+        {/* Player list */}
+        <div className="space-y-3">
+          <label className="font-headline font-bold text-[10px] text-[#8a8a8a] uppercase tracking-widest">
+            Players <span className="text-[#cafd00]">{players.length}/{roomSize}</span>
+          </label>
+          <div className="space-y-2">
+            {players.map((p, i) => (
+              <motion.div key={p.uid} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
+                className={`bg-[#141414] p-3 flex items-center justify-between border-l-4 ${i === 0 ? "border-[#cafd00]" : "border-[#ff51fa]"}`}>
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 flex items-center justify-center font-headline font-black text-lg"
+                    style={{ backgroundColor: fakeColors[i % fakeColors.length], color: "#0a0a0a" }}>
+                    {(p.username ?? "?").charAt(0).toUpperCase()}
+                  </div>
+                  <span className="font-bold text-[13px] text-white">
+                    {p.username}{p.uid === uid ? " (You)" : ""}
+                  </span>
+                </div>
+                <StatusBadge label={i === 0 ? "Host" : "Ready"} color={i === 0 ? "primary" : "success"} />
+              </motion.div>
+            ))}
+            {Array.from({ length: Math.max(0, roomSize - players.length) }).map((_, i) => (
+              <div key={i} className="bg-[#0f0f0f] border border-dashed border-[#2a2a2a] p-3 flex items-center justify-center h-14">
+                <span className="text-[#3a3a3a] text-[12px] italic">Waiting for player…</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </motion.div>

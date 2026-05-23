@@ -430,6 +430,160 @@ function finishGame(
   timers.set(`cleanup:${room.id}`, cleanupTimer);
 }
 
+// ── Join existing private room ─────────────────────────────────────────────
+export type JoinRoomResult =
+  | { ok: true }
+  | { ok: false; reason: "not_found" | "already_started" | "full" | "already_in_room" };
+
+export function addPlayerToRoom(
+  socketId: string,
+  uid: string,
+  username: string,
+  avatar: string,
+  mmr: number,
+  roomId: string,
+  io: Server
+): JoinRoomResult {
+  const room = rooms.get(roomId);
+  if (!room) return { ok: false, reason: "not_found" };
+  if (room.status !== "waiting") return { ok: false, reason: "already_started" };
+
+  // Prevent duplicate joins
+  for (const p of room.players.values()) {
+    if (p.uid === uid) return { ok: false, reason: "already_in_room" };
+  }
+
+  if (room.players.size >= (room.maxPlayers ?? 6)) return { ok: false, reason: "full" };
+
+  const player: RoomPlayer = {
+    id:             socketId,
+    uid,
+    username,
+    avatar,
+    status:         "active",
+    lives:          3,
+    mmr,
+    connectedAt:    Date.now(),
+    disconnectedAt: null,
+    graceExpiry:    null,
+  };
+
+  room.players.set(socketId, player);
+  room.playerOrder.push(socketId);
+
+  const socket = io.sockets.sockets.get(socketId);
+  socket?.join(roomId);
+  if (socket) socket.data.roomId = roomId;
+
+  // Notify everyone in the room of the updated player list
+  io.to(roomId).emit("room_updated", serializeRoom(room));
+
+  return { ok: true };
+}
+
+// ── Create a waiting private room (host only) ──────────────────────────────
+export function createPrivateRoom(
+  hostSocketId: string,
+  hostUid: string,
+  username: string,
+  avatar: string,
+  mmr: number,
+  maxPlayers: number,
+  turnDurationMs: number,
+  io: Server
+): RoomState {
+  const roomId = generateRoomId();
+  const players = new Map<string, RoomPlayer>();
+
+  const host: RoomPlayer = {
+    id:             hostSocketId,
+    uid:            hostUid,
+    username,
+    avatar,
+    status:         "active",
+    lives:          3,
+    mmr,
+    connectedAt:    Date.now(),
+    disconnectedAt: null,
+    graceExpiry:    null,
+  };
+  players.set(hostSocketId, host);
+
+  const room: RoomState = {
+    id:                   roomId,
+    mode:                 "casual",
+    status:               "waiting" as any,
+    players,
+    playerOrder:          [hostSocketId],
+    currentTurnSocketId:  hostSocketId,
+    turnDeadline:         0,
+    turnDuration:         turnDurationMs,
+    lastWord:             "",
+    usedWords:            new Set(),
+    createdAt:            Date.now(),
+    startedAt:            null,
+    finishedAt:           null,
+    winnerId:             null,
+    winnerUid:            null,
+    eventLog:             [],
+    maxPlayers,
+    hostSocketId,
+  } as any;
+
+  rooms.set(roomId, room);
+
+  const socket = io.sockets.sockets.get(hostSocketId);
+  socket?.join(roomId);
+  if (socket) socket.data.roomId = roomId;
+
+  console.log(`[Room] Private room created ${roomId} host=${hostUid} maxPlayers=${maxPlayers}`);
+  return room;
+}
+
+// ── Start a waiting private room ───────────────────────────────────────────
+export function startPrivateRoom(
+  roomId: string,
+  requestingSocketId: string,
+  io: Server,
+  onFinish: (room: RoomState) => void
+): { ok: boolean; reason?: string } {
+  const room = rooms.get(roomId) as any;
+  if (!room) return { ok: false, reason: "not_found" };
+  if (room.status !== "waiting") return { ok: false, reason: "already_started" };
+  if (room.hostSocketId !== requestingSocketId) return { ok: false, reason: "not_host" };
+  if (room.players.size < 2) return { ok: false, reason: "need_more_players" };
+
+  room.status = "countdown";
+
+  io.to(roomId).emit("match_found", {
+    roomId,
+    players: Array.from(room.players.values()).map((p: RoomPlayer) => ({
+      id: p.id, uid: p.uid, username: p.username, avatar: p.avatar,
+      status: p.status, lives: p.lives,
+    })),
+  });
+
+  const countdownTimer = setTimeout(() => {
+    room.status    = "active";
+    room.startedAt = Date.now();
+    room.turnDeadline = Date.now() + room.turnDuration;
+    room.currentTurnSocketId = room.playerOrder[0];
+
+    room.eventLog.push({ type: "game_started", socketId: "", uid: "", data: {}, serverTs: Date.now() });
+
+    io.to(roomId).emit("game_start", {
+      currentTurnId: room.currentTurnSocketId,
+      turnDeadline:  room.turnDeadline,
+      lastWord:      room.lastWord,
+    });
+
+    startTurnTimer(room, io, onFinish);
+  }, 3_000);
+
+  timers.set(`countdown:${roomId}`, countdownTimer);
+  return { ok: true };
+}
+
 // ── Public getters ─────────────────────────────────────────────────────────
 export function getRoom(roomId: string): RoomState | undefined {
   return rooms.get(roomId);

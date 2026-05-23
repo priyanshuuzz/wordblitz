@@ -16,6 +16,7 @@ import { handleUsePower, cleanupRoom } from "./src/engine/powerEngine.js";
 import {
   handleWordSubmit, handleDisconnect, handleReconnect,
   getActiveRoomCount, serializeRoom, getRoom,
+  addPlayerToRoom, createPrivateRoom, startPrivateRoom,
 } from "./src/rooms/roomManager.js";
 import {
   enqueue, dequeue, isQueued, getQueueLength, tick as mmTick,
@@ -192,6 +193,52 @@ io.on("connection", (socket: Socket) => {
     }, room, io);
     if (!result.success) {
       socket.emit("power_blocked", { reason: result.reason });
+    }
+  });
+
+  // ── Private room: create ────────────────────────────────────────────────
+  socket.on("create_private_room", (payload: {
+    username: string; avatar: string; mmr?: number;
+    maxPlayers?: number; turnDuration?: number;
+  }) => {
+    if (!payload?.username) return;
+    const room = createPrivateRoom(
+      socket.id, uid,
+      payload.username, payload.avatar ?? "",
+      payload.mmr ?? 1000,
+      Math.min(Math.max(payload.maxPlayers ?? 4, 2), 8),
+      payload.turnDuration ?? 15_000,
+      io
+    );
+    socket.emit("private_room_created", { roomId: room.id });
+  });
+
+  // ── Private room: join by code ───────────────────────────────────────────
+  socket.on("join_private_room", (payload: {
+    roomId: string; username: string; avatar: string; mmr?: number;
+  }) => {
+    if (!payload?.roomId || !payload?.username) return;
+    const code = payload.roomId.toUpperCase().replace(/-/g, "");
+    const result = addPlayerToRoom(
+      socket.id, uid,
+      payload.username, payload.avatar ?? "",
+      payload.mmr ?? 1000,
+      code, io
+    );
+    if (!result.ok) {
+      socket.emit("join_room_error", { reason: (result as { ok: false; reason: string }).reason });
+    } else {
+      const room = getRoom(code);
+      if (room) socket.emit("join_room_success", { roomId: code, snapshot: serializeRoom(room) });
+    }
+  });
+
+  // ── Private room: start (host only) ─────────────────────────────────────
+  socket.on("start_private_room", (payload: { roomId: string }) => {
+    if (!payload?.roomId) return;
+    const result = startPrivateRoom(payload.roomId, socket.id, io, onMatchFinish);
+    if (!result.ok) {
+      socket.emit("start_room_error", { reason: result.reason });
     }
   });
 
