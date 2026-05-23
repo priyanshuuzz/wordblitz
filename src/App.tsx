@@ -838,60 +838,44 @@ const HomeContent = () => {
 
           {/* ── Join Room by Code ─────────────────────────────────────── */}
           <div className="border border-[#1e1e1e] bg-[#0f0f0f]">
-            <button
-              onClick={() => { sfx.click(); setShowJoin(v => !v); setJoinError(null); setJoinCode(""); }}
-              className="w-full h-11 flex items-center justify-between px-4 text-[11px] font-headline font-bold uppercase tracking-widest text-[#8a8a8a] hover:text-white transition-colors"
-            >
-              <span className="flex items-center gap-2"><Key size={14} className="text-[#cafd00]" />Join a Room</span>
-              <motion.span animate={{ rotate: showJoin ? 180 : 0 }} transition={{ duration: 0.2 }}>
-                <ChevronLeft size={14} className="-rotate-90" />
-              </motion.span>
-            </button>
-            <AnimatePresence>
-              {showJoin && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }}
-                  className="overflow-hidden"
+            <div className="px-4 pt-3 pb-1 flex items-center gap-2">
+              <Key size={13} className="text-[#cafd00]" />
+              <span className="font-headline font-bold text-[10px] text-[#8a8a8a] uppercase tracking-widest">Join a Room</span>
+            </div>
+            <div className="px-4 pb-4 flex flex-col gap-3">
+              <div className="flex gap-2">
+                <input
+                  value={joinCode}
+                  onChange={e => { setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "")); setJoinError(null); }}
+                  onKeyDown={e => e.key === "Enter" && joinRoom()}
+                  placeholder="ENTER ROOM CODE"
+                  maxLength={8}
+                  aria-label="Room code"
+                  className="input-game flex-grow h-12 px-4 font-mono text-[16px] font-bold text-[#f3ffca] tracking-[0.2em] placeholder-[#3a3a3a] uppercase"
+                />
+                <motion.button
+                  whileTap={buttonTap}
+                  onClick={joinRoom}
+                  disabled={joining || joinCode.length < 6}
+                  className="h-12 px-5 bg-[#cafd00] text-[#516700] font-headline font-black text-[12px] uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#d8ff33] transition-colors flex items-center gap-2"
                 >
-                  <div className="px-4 pb-4 flex flex-col gap-3 border-t border-[#1e1e1e] pt-3">
-                    <div className="flex gap-2">
-                      <input
-                        value={joinCode}
-                        onChange={e => { setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "")); setJoinError(null); }}
-                        onKeyDown={e => e.key === "Enter" && joinRoom()}
-                        placeholder="ROOM CODE"
-                        maxLength={8}
-                        aria-label="Room code"
-                        className="input-game flex-grow h-12 px-4 font-mono text-[18px] font-bold text-[#f3ffca] tracking-[0.25em] placeholder-[#3a3a3a] uppercase"
-                      />
-                      <motion.button
-                        whileTap={buttonTap}
-                        onClick={joinRoom}
-                        disabled={joining || joinCode.length < 6}
-                        className="h-12 px-5 bg-[#cafd00] text-[#516700] font-headline font-black text-[12px] uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#d8ff33] transition-colors flex items-center gap-2"
-                      >
-                        {joining ? (
-                          <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
-                            <RefreshCcw size={16} />
-                          </motion.span>
-                        ) : (
-                          <ArrowUp size={16} className="rotate-90" />
-                        )}
-                        {joining ? "Joining…" : "Join"}
-                      </motion.button>
-                    </div>
-                    {joinError && (
-                      <motion.p initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}
-                        className="text-[#ff5c3a] text-[11px] font-bold uppercase tracking-widest flex items-center gap-1.5">
-                        <XCircle size={12} />{joinError}
-                      </motion.p>
-                    )}
-                    <p className="text-[#3a3a3a] text-[10px] uppercase tracking-widest">Ask the host for their room code</p>
-                  </div>
-                </motion.div>
+                  {joining ? (
+                    <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
+                      <RefreshCcw size={16} />
+                    </motion.span>
+                  ) : (
+                    <ArrowUp size={16} className="rotate-90" />
+                  )}
+                  {joining ? "…" : "Join"}
+                </motion.button>
+              </div>
+              {joinError && (
+                <motion.p initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}
+                  className="text-[#ff5c3a] text-[11px] font-bold uppercase tracking-widest flex items-center gap-1.5">
+                  <XCircle size={12} />{joinError}
+                </motion.p>
               )}
-            </AnimatePresence>
+            </div>
           </div>
         </div>
       </section>
@@ -1257,20 +1241,50 @@ const PrivateRoomSetup = () => {
         unsubscribe = subscribeToRoom(code, (room) => {
           if (!room || cancelled) return;
           setPlayers(room.players.map((p, i) => ({ ...p, isHost: i === 0 })));
+
           if (room.status === "started") {
-            setGameState({
-              status: "playing",
-              roomId: code,
-              players: room.players.map((p) => ({
-                id: p.uid, uid: p.uid,
-                username: p.username, avatar: p.avatar,
-                status: "active" as const, lives: 3,
-              })),
-              currentTurnId: room.players[0]?.uid ?? null,
-              lastWord: "", usedWords: [],
-              turnDeadline: Date.now() + room.turnDuration,
-              turnDuration: room.turnDuration,
-            });
+            const myUid = useGameStore.getState().uid;
+            const currentStatus = useGameStore.getState().status;
+
+            // Map current user to "me", others keep their uid as id
+            const mappedPlayers = room.players.map((p) => ({
+              id: p.uid === myUid ? "me" : p.uid,
+              uid: p.uid,
+              username: p.username, avatar: p.avatar,
+              status: "active" as const, lives: 3,
+            }));
+
+            const currentTurnId = room.currentTurnUid === myUid
+              ? "me"
+              : (room.currentTurnUid ?? null);
+
+            if (currentStatus !== "playing") {
+              // First time entering playing state
+              sfx.matchFound();
+              setGameState({
+                status: "playing",
+                roomId: code,
+                players: mappedPlayers,
+                currentTurnId,
+                lastWord: room.lastWord ?? "",
+                usedWords: room.usedWords ?? [],
+                turnDeadline: room.turnDeadline ?? (Date.now() + (room.turnDuration ?? 15_000)),
+                turnDuration: room.turnDuration ?? 15_000,
+              });
+            } else {
+              // Game already running — sync turn/word updates from other player
+              setGameState({
+                players: mappedPlayers,
+                currentTurnId,
+                lastWord: room.lastWord ?? "",
+                usedWords: room.usedWords ?? [],
+                turnDeadline: room.turnDeadline ?? (Date.now() + (room.turnDuration ?? 15_000)),
+              });
+            }
+          }
+
+          if (room.status === "cancelled" && useGameStore.getState().status === "playing") {
+            setGameState({ status: "finished", winnerId: null });
           }
         });
       });
@@ -1319,7 +1333,8 @@ const PrivateRoomSetup = () => {
     if (!roomCode || players.length < 2) return;
     sfx.matchFound();
     const { startPrivateRoom } = await import("./lib/privateRoom");
-    await startPrivateRoom(roomCode);
+    // First player (host) goes first
+    await startPrivateRoom(roomCode, players[0].uid);
     // onSnapshot above will handle the transition for all players
   };
 

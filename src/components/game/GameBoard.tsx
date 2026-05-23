@@ -223,22 +223,38 @@ export const GameBoard: React.FC = () => {
     if (timerRef.current) clearInterval(timerRef.current);
     const cp = players.find(p => p.id === currentTurnId);
     if (!cp || cp.status !== "active") return;
+
+    // In a private room, only the player whose turn it is handles their own timeout
+    const { roomId, uid: myUid } = useGameStore.getState();
+    if (roomId && cp.id !== "me") return; // other player's client handles their own timeout
+
     sfx.eliminated();
     setElimToast(`${cp.username} eliminated!`);
     setTimeout(() => setElimToast(null), 2500);
-
-    // Reset combo on timeout
     setComboState(prev => resetCombo(prev));
     setShowCombo(false);
-
     recordEvent("player_eliminated", cp.id, { reason: "timeout" });
 
+    const remainingAfterElim = players.filter(p => p.status === "active" && p.id !== currentTurnId);
+
+    // Private room — sync elimination via Firestore
+    if (roomId) {
+      const nextPlayer = remainingAfterElim[0];
+      const nextUid = nextPlayer?.uid ?? null;
+      const winnerUid = remainingAfterElim.length <= 1 ? (nextPlayer?.uid ?? null) : null;
+      import("../../lib/privateRoom").then(({ eliminateAndAdvance }) => {
+        eliminateAndAdvance(roomId, nextUid, winnerUid, turnDuration, usedWords).catch(console.error);
+      });
+      return;
+    }
+
+    // Local mode below
     setGameState({
       players: players.map(p =>
         p.id === currentTurnId ? { ...p, status: "eliminated" as const } : p
       ),
     });
-    const remaining = players.filter(p => p.status === "active" && p.id !== currentTurnId);
+    const remaining = remainingAfterElim;
     if (remaining.length <= 1) {
       const winner = remaining[0];
       if (winner?.id === "me") { sfx.victory(); launchConfetti(); }
@@ -281,8 +297,12 @@ export const GameBoard: React.FC = () => {
     }
   }
 
-  // ── Bot AI — personality-driven via botDecisionEngine ────────────────────
+  // ── Bot AI — only runs in local/solo games, NOT in private rooms ─────────
   useEffect(() => {
+    // Skip bot entirely when playing in a private room (real players via Firestore)
+    const { roomId } = useGameStore.getState();
+    if (roomId) return;
+
     if (isMyTurn || !currentTurnId || isPaused) return;
     const cp = players.find(p => p.id === currentTurnId);
     if (!cp || cp.status !== "active") return;
@@ -359,8 +379,8 @@ export const GameBoard: React.FC = () => {
 
     setIsValidating(true);
 
-    // If connected to server, emit
-    const { roomId } = useGameStore.getState();
+    // If connected to server via socket, emit
+    const { roomId, players: currentPlayers, uid: myUid } = useGameStore.getState();
     if (roomId && socket.connected) {
       socket.emit("submit_word", { roomId, word: word.toLowerCase() });
       setInput("");
@@ -368,7 +388,32 @@ export const GameBoard: React.FC = () => {
       return;
     }
 
-    // Local mode
+    // Private room via Firestore — sync word to both players
+    if (roomId) {
+      try {
+        const { submitWord } = await import("../../lib/privateRoom");
+        const activeIds = currentPlayers.filter(p => p.status === "active").map(p => p.id);
+        const myIdx = activeIds.indexOf("me");
+        const nextLocalId = activeIds[(myIdx + 1) % activeIds.length] ?? "me";
+        // Map local "me" back to real uid for Firestore
+        const nextPlayer = currentPlayers.find(p => p.id === nextLocalId);
+        const nextUid = nextPlayer?.uid ?? myUid;
+        const { turnDuration: td } = useGameStore.getState();
+        await submitWord(roomId, word, nextUid, td, usedWords);
+        // Firestore onSnapshot will update state for both players
+        setInput("");
+        setIsValidating(false);
+        sfx.wordAccepted();
+        setShowFlash(true);
+        setTimeout(() => setShowFlash(false), 600);
+        return;
+      } catch (err) {
+        console.error("[PrivateRoom] submitWord failed:", err);
+        // Fall through to local mode
+      }
+    }
+
+    // Local mode (no roomId — solo/bot game)
     const newUsed = [...usedWords, word.toLowerCase()];
     sfx.wordAccepted();
     setShowFlash(true);

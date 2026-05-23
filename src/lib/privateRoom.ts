@@ -4,7 +4,7 @@
 
 import {
   collection, doc, setDoc, getDoc, updateDoc,
-  onSnapshot, deleteDoc, arrayUnion, serverTimestamp,
+  onSnapshot, arrayUnion, serverTimestamp,
   type Unsubscribe,
 } from "firebase/firestore";
 import { db } from "../firebase";
@@ -19,6 +19,13 @@ export interface RoomMember {
 
 export type PrivateRoomStatus = "waiting" | "started" | "cancelled";
 
+export interface GameMove {
+  word: string;
+  byUid: string;
+  nextTurnUid: string;
+  ts: number;
+}
+
 export interface PrivateRoomDoc {
   roomId: string;
   hostUid: string;
@@ -28,6 +35,12 @@ export interface PrivateRoomDoc {
   status: PrivateRoomStatus;
   players: RoomMember[];
   createdAt: unknown;
+  // Game state (synced via Firestore)
+  currentTurnUid?: string;
+  lastWord?: string;
+  usedWords?: string[];
+  turnDeadline?: number;
+  winnerId?: string | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -89,15 +102,61 @@ export async function joinPrivateRoom(
     players: arrayUnion(member),
   });
 
-  // Return updated room
   const updated = await getDoc(ref);
   return { ok: true, room: updated.data() as PrivateRoomDoc };
 }
 
-// ── Start room (host only) ─────────────────────────────────────────────────
+// ── Start room (host only) — sets status + initial game state ──────────────
 
-export async function startPrivateRoom(roomId: string): Promise<void> {
-  await updateDoc(doc(db, "privateRooms", roomId), { status: "started" });
+export async function startPrivateRoom(roomId: string, firstPlayerUid: string): Promise<void> {
+  await updateDoc(doc(db, "privateRooms", roomId), {
+    status: "started",
+    currentTurnUid: firstPlayerUid,
+    lastWord: "",
+    usedWords: [],
+    turnDeadline: Date.now() + 15_000,
+    winnerId: null,
+  });
+}
+
+// ── Submit a word (syncs to Firestore so both players see it) ──────────────
+
+export async function submitWord(
+  roomId: string,
+  word: string,
+  nextTurnUid: string,
+  turnDuration: number,
+  usedWords: string[]
+): Promise<void> {
+  await updateDoc(doc(db, "privateRooms", roomId), {
+    lastWord: word.toUpperCase(),
+    usedWords: [...usedWords, word.toLowerCase()],
+    currentTurnUid: nextTurnUid,
+    turnDeadline: Date.now() + turnDuration,
+  });
+}
+
+// ── Eliminate a player (timeout) ───────────────────────────────────────────
+
+export async function eliminateAndAdvance(
+  roomId: string,
+  nextTurnUid: string | null,
+  winnerId: string | null,
+  turnDuration: number,
+  usedWords: string[]
+): Promise<void> {
+  const update: Record<string, unknown> = {
+    currentTurnUid: nextTurnUid,
+    usedWords,
+    winnerId,
+  };
+  if (nextTurnUid) {
+    update.turnDeadline = Date.now() + turnDuration;
+  }
+  if (winnerId !== undefined) {
+    update.status = "cancelled"; // game over
+  }
+  await updateDoc(doc(db, "privateRooms", roomId), update);
 }
 
 // ── Cancel / leave room ────────────────────────────────────────────────────

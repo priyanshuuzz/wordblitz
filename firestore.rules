@@ -77,6 +77,14 @@ service cloud.firestore {
             request.resource.data.diff(resource.data).affectedKeys().hasOnly(["players"])
             && resource.data.status == "waiting"
           )
+          ||
+          // Any player in the room can update game state (submit word, advance turn)
+          (
+            request.auth.uid in resource.data.players.map(p, p.uid)
+            && resource.data.status == "started"
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(["lastWord", "usedWords", "currentTurnUid", "turnDeadline", "winnerId", "status"])
+          )
         );
 
       allow delete: if isAuth() && resource.data.hostUid == request.auth.uid;
