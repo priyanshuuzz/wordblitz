@@ -273,11 +273,8 @@ async function startServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "dist");
-    app.use(express.static(distPath, { maxAge: "1d" }));
-    app.get("*", (_req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
+  // In production (Railway), frontend is served by Netlify — no static files needed
 
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`[Server] WORDBLITZ running on http://localhost:${PORT}`);
