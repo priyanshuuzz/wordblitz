@@ -1333,9 +1333,7 @@ const PrivateRoomSetup = () => {
     if (!roomCode || players.length < 2) return;
     sfx.matchFound();
     const { startPrivateRoom } = await import("./lib/privateRoom");
-    // First player (host) goes first
-    await startPrivateRoom(roomCode, players[0].uid);
-    // onSnapshot above will handle the transition for all players
+    await startPrivateRoom(roomCode, players[0].uid, turnDuration);
   };
 
   const displayCode = roomCode

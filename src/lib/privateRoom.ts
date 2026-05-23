@@ -108,13 +108,20 @@ export async function joinPrivateRoom(
 
 // ── Start room (host only) — sets status + initial game state ──────────────
 
-export async function startPrivateRoom(roomId: string, firstPlayerUid: string): Promise<void> {
+const STARTER_WORDS = [
+  "RIVER", "STORM", "FLAME", "OCEAN", "BLADE",
+  "CROWN", "FROST", "EAGLE", "GHOST", "LUNAR",
+  "PRISM", "QUEST", "SPARK", "TIGER", "VENOM",
+];
+
+export async function startPrivateRoom(roomId: string, firstPlayerUid: string, turnDuration: number): Promise<void> {
+  const starter = STARTER_WORDS[Math.floor(Math.random() * STARTER_WORDS.length)];
   await updateDoc(doc(db, "privateRooms", roomId), {
     status: "started",
     currentTurnUid: firstPlayerUid,
-    lastWord: "",
-    usedWords: [],
-    turnDeadline: Date.now() + 15_000,
+    lastWord: starter,
+    usedWords: [starter.toLowerCase()],
+    turnDeadline: Date.now() + turnDuration,
     winnerId: null,
   });
 }
