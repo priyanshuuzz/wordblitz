@@ -220,4 +220,84 @@ function normalizePlayer(p: any) {
   };
 }
 
+// ── Private Room Firestore sync (global, survives screen transitions) ──────
+// Watches the active private room doc and keeps game state in sync for
+// both players. Starts when roomId is set, stops when game ends.
+
+let privateRoomUnsub: (() => void) | null = null;
+let watchedRoomId: string | null = null;
+
+export function startPrivateRoomSync(roomId: string): void {
+  if (watchedRoomId === roomId) return; // already watching
+  stopPrivateRoomSync();
+  watchedRoomId = roomId;
+
+  import("./lib/privateRoom").then(({ subscribeToRoom }) => {
+    if (watchedRoomId !== roomId) return; // cancelled before import resolved
+
+    privateRoomUnsub = subscribeToRoom(roomId, (room) => {
+      if (!room) return;
+      const store = useGameStore.getState();
+      const myUid = store.uid;
+
+      // Lobby updates (players joining)
+      if (room.status === "waiting" && store.status === "private_room") {
+        // handled by PrivateRoomSetup local state — no action needed here
+        return;
+      }
+
+      if (room.status === "started") {
+        const mappedPlayers = room.players.map((p: any) => ({
+          id: p.uid === myUid ? "me" : p.uid,
+          uid: p.uid,
+          username: p.username,
+          avatar: p.avatar,
+          status: "active" as const,
+          lives: 3,
+        }));
+
+        const currentTurnId = room.currentTurnUid === myUid
+          ? "me"
+          : (room.currentTurnUid ?? null);
+
+        if (store.status !== "playing") {
+          // Transition to game
+          useGameStore.getState().setGameState({
+            status: "playing",
+            roomId,
+            players: mappedPlayers,
+            currentTurnId,
+            lastWord: room.lastWord ?? "",
+            usedWords: room.usedWords ?? [],
+            turnDeadline: room.turnDeadline ?? (Date.now() + (room.turnDuration ?? 15_000)),
+            turnDuration: room.turnDuration ?? 15_000,
+          });
+        } else {
+          // Already playing — sync opponent's move
+          useGameStore.getState().setGameState({
+            players: mappedPlayers,
+            currentTurnId,
+            lastWord: room.lastWord ?? "",
+            usedWords: room.usedWords ?? [],
+            turnDeadline: room.turnDeadline ?? (Date.now() + (room.turnDuration ?? 15_000)),
+          });
+        }
+      }
+
+      if (room.status === "cancelled") {
+        stopPrivateRoomSync();
+        if (store.status === "playing") {
+          useGameStore.getState().setGameState({ status: "finished", winnerId: null });
+        }
+      }
+    });
+  });
+}
+
+export function stopPrivateRoomSync(): void {
+  privateRoomUnsub?.();
+  privateRoomUnsub = null;
+  watchedRoomId = null;
+}
+
 export default socket;

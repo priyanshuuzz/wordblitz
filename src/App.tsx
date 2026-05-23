@@ -1227,96 +1227,60 @@ const PrivateRoomSetup = () => {
 
   // Create room on mount
   useEffect(() => {
-    let unsubscribe: (() => void) | null = null;
     let cancelled = false;
-
-    // Check if we're a guest (already have a roomId from joining)
     const existingRoomId = useGameStore.getState().roomId;
 
-    const subscribeAndListen = (code: string, isCreating: boolean) => {
+    if (existingRoomId) {
+      // Guest — already joined, start global sync
+      setRoomCode(existingRoomId);
+      setCreating(false);
+      import("./socket").then(({ startPrivateRoomSync }) => {
+        if (!cancelled) startPrivateRoomSync(existingRoomId);
+      });
+      // Also subscribe locally just to update the player list in the lobby UI
       import("./lib/privateRoom").then(({ subscribeToRoom }) => {
         if (cancelled) return;
-        if (!isCreating) { setRoomCode(code); setCreating(false); }
-
-        unsubscribe = subscribeToRoom(code, (room) => {
+        const unsub = subscribeToRoom(existingRoomId, (room) => {
           if (!room || cancelled) return;
           setPlayers(room.players.map((p, i) => ({ ...p, isHost: i === 0 })));
-
-          if (room.status === "started") {
-            const myUid = useGameStore.getState().uid;
-            const currentStatus = useGameStore.getState().status;
-
-            // Map current user to "me", others keep their uid as id
-            const mappedPlayers = room.players.map((p) => ({
-              id: p.uid === myUid ? "me" : p.uid,
-              uid: p.uid,
-              username: p.username, avatar: p.avatar,
-              status: "active" as const, lives: 3,
-            }));
-
-            const currentTurnId = room.currentTurnUid === myUid
-              ? "me"
-              : (room.currentTurnUid ?? null);
-
-            if (currentStatus !== "playing") {
-              // First time entering playing state
-              sfx.matchFound();
-              setGameState({
-                status: "playing",
-                roomId: code,
-                players: mappedPlayers,
-                currentTurnId,
-                lastWord: room.lastWord ?? "",
-                usedWords: room.usedWords ?? [],
-                turnDeadline: room.turnDeadline ?? (Date.now() + (room.turnDuration ?? 15_000)),
-                turnDuration: room.turnDuration ?? 15_000,
-              });
-            } else {
-              // Game already running — sync turn/word updates from other player
-              setGameState({
-                players: mappedPlayers,
-                currentTurnId,
-                lastWord: room.lastWord ?? "",
-                usedWords: room.usedWords ?? [],
-                turnDeadline: room.turnDeadline ?? (Date.now() + (room.turnDuration ?? 15_000)),
-              });
-            }
-          }
-
-          if (room.status === "cancelled" && useGameStore.getState().status === "playing") {
-            setGameState({ status: "finished", winnerId: null });
-          }
         });
+        return () => unsub();
       });
-    };
-
-    if (existingRoomId) {
-      // Guest path — already joined, just subscribe
-      subscribeAndListen(existingRoomId, false);
     } else {
-      // Host path — create room then subscribe
-      import("./lib/privateRoom").then(({ createPrivateRoom }) => {
+      // Host — create room, then start global sync
+      import("./lib/privateRoom").then(({ createPrivateRoom, subscribeToRoom }) => {
         if (cancelled) return;
-        createPrivateRoom(
-          { uid, username, avatar },
-          roomSize,
-          turnDuration
-        ).then(code => {
-          if (cancelled) return;
-          setRoomCode(code);
-          setCreating(false);
-          setGameState({ roomId: code });
-          subscribeAndListen(code, true);
-        }).catch(err => {
-          if (!cancelled) { setCreating(false); setError("Failed to create room. Check your connection."); }
-          console.error("[PrivateRoom] create error:", err);
-        });
+        createPrivateRoom({ uid, username, avatar }, roomSize, turnDuration)
+          .then(code => {
+            if (cancelled) return;
+            setRoomCode(code);
+            setCreating(false);
+            setGameState({ roomId: code });
+
+            // Start global persistent sync
+            import("./socket").then(({ startPrivateRoomSync }) => {
+              if (!cancelled) startPrivateRoomSync(code);
+            });
+
+            // Local subscription just for lobby player list UI
+            const unsub = subscribeToRoom(code, (room) => {
+              if (!room || cancelled) return;
+              setPlayers(room.players.map((p, i) => ({ ...p, isHost: i === 0 })));
+            });
+            // Store unsub for cleanup
+            (window as any).__privateRoomLobbyUnsub = unsub;
+          })
+          .catch(err => {
+            if (!cancelled) { setCreating(false); setError("Failed to create room. Check your connection."); }
+            console.error("[PrivateRoom] create error:", err);
+          });
       });
     }
 
     return () => {
       cancelled = true;
-      unsubscribe?.();
+      // Clean up lobby-only listener (global sync stays alive for gameplay)
+      (window as any).__privateRoomLobbyUnsub?.();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1344,7 +1308,11 @@ const PrivateRoomSetup = () => {
     <motion.div variants={pageVariants} initial="initial" animate="animate" exit="exit"
       className="min-h-[100dvh] flex flex-col bg-[#0a0a0a] overflow-y-auto no-scrollbar">
       <header className="h-16 flex items-center px-5 gap-4 border-b border-[#1a1a1a] sticky top-0 bg-[#0a0a0a] z-10">
-        <motion.button whileTap={buttonTap} onClick={() => { sfx.click(); setGameState({ status: "lobby", roomId: null }); }}
+        <motion.button whileTap={buttonTap} onClick={() => {
+            sfx.click();
+            import("./socket").then(({ stopPrivateRoomSync }) => stopPrivateRoomSync());
+            setGameState({ status: "lobby", roomId: null });
+          }}
           className="w-9 h-9 flex items-center justify-center text-[#cafd00] hover:bg-[#141414] transition-colors">
           <ArrowLeft size={20} />
         </motion.button>
@@ -1930,10 +1898,12 @@ export default function App() {
             {status === "finished"           && wrap("finished",   (
               <ResultScreen
                 onPlayAgain={() => {
+                  import("./socket").then(({ stopPrivateRoomSync }) => stopPrivateRoomSync());
                   resetGame();
                   setGameState({ status: "matchmaking" });
                 }}
                 onBackToHome={() => {
+                  import("./socket").then(({ stopPrivateRoomSync }) => stopPrivateRoomSync());
                   resetGame();
                   setGameState({ status: "lobby" });
                 }}
