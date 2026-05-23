@@ -1,0 +1,5 @@
+{
+  "name": "WordBlitz",
+  "description": "Real-time multiplayer word-chain battle arena. Chain words, beat the timer, and dominate the grid.",
+  "requestFramePermissions": []
+}

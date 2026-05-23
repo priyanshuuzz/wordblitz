@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    function isAuth()     { return request.auth != null; }
+    function isOwner(uid) { return request.auth.uid == uid; }
+
+    // ── Players ───────────────────────────────────────────────────────────────
+    // Anyone authenticated can read any profile (for leaderboard, social).
+    // Players can only write their own safe fields.
+    // XP, MMR, wins, rank, isBanned → Admin SDK only (server writes).
+    match /players/{uid} {
+      allow read: if isAuth();
+
+      allow create: if isOwner(uid)
+        && request.resource.data.keys().hasAll(["username", "avatar", "region"])
+        && !request.resource.data.keys().hasAny([
+             "xp", "mmr", "wins", "losses", "rank", "isBanned",
+             "winStreak", "gamesPlayed", "level"
+           ]);
+
+      allow update: if isOwner(uid)
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(["username", "avatar", "region", "settings", "lastActiveAt"]);
+
+      // Subcollection: achievements (read-only for owner)
+      match /achievements/{achId} {
+        allow read:  if isOwner(uid);
+        allow write: if false;  // Admin SDK only
+      }
+    }
+
+    // ── Matches ───────────────────────────────────────────────────────────────
+    // Participants can read their own matches.
+    // No client writes — server writes via Admin SDK.
+    match /matches/{matchId} {
+      allow read:  if isAuth() && request.auth.uid in resource.data.playerIds;
+      allow write: if false;
+    }
+
+    // ── Leaderboard ───────────────────────────────────────────────────────────
+    // Public read (anyone can see rankings).
+    // No client writes — scheduled Cloud Function writes.
+    match /leaderboard/{doc=**} {
+      allow read:  if true;
+      allow write: if false;
+    }
+
+    // ── Suspicions (anti-cheat log) ───────────────────────────────────────────
+    // Admin read only. No client access.
+    match /suspicions/{doc} {
+      allow read:  if false;
+      allow write: if false;
+    }
+
+    // ── Daily rewards ─────────────────────────────────────────────────────────
+    // Players can read their own reward state.
+    // Writes via callable Cloud Function only.
+    match /rewards/{uid} {
+      allow read:  if isOwner(uid);
+      allow write: if false;
+    }
+  }
+}
