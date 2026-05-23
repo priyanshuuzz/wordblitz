@@ -3,7 +3,7 @@
     "builder": "RAILPACK"
   },
   "deploy": {
-    "startCommand": "node --loader tsx/esm server.ts",
+    "startCommand": "node --import tsx/esm server.ts",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 30,
     "restartPolicyType": "ON_FAILURE",
